@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>植物成長紀錄</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .pet-center { max-height: 320px; }
+        .modal-backdrop { transition: opacity 0.2s ease; }
+        .hidden-cam { display: none; }
+    </style>
+</head>
+<body class="bg-green-50 min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-lg overflow-hidden">
+        <header class="p-4 flex items-center justify-between bg-emerald-600 text-white">
+            <button id="back-home" class="bg-white/20 px-3 py-1 rounded text-sm">← 主頁</button>
+            <div class="text-center">
+                <div class="text-xs">日期</div>
+                <div id="current-date" class="font-bold text-lg"></div>
+            </div>
+            <div style="width:56px"></div>
+        </header>
+
+        <main class="p-4">
+            <div class="flex justify-center mb-2">
+                <div class="text-center">
+                    <div id="pet-area" class="relative">
+                        <img id="pet-visual-main" src="Pet1_1.png" alt="電子寵物" class="pet-center mx-auto h-64 object-contain cursor-pointer">
+                        <p class="mt-2 text-center text-lg font-bold" id="pet-hint">點擊圖片切換 → 再點擊返回主頁</p>
+                    </div>
+                    <div class="mt-2 flex gap-2 justify-center">
+                        <img id="pet-choice-a" src="Pet1_1.png" class="w-20 h-20 object-contain rounded-lg border-2 border-emerald-200 cursor-pointer">
+                        <img id="pet-choice-b" src="Pet2_1.png" class="w-20 h-20 object-contain rounded-lg border-2 border-transparent cursor-pointer">
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-4 border-t pt-4">
+                <div class="grid grid-cols-3 gap-2">
+                    <button id="btn-data" class="py-2 rounded bg-emerald-500 text-white font-bold">資料</button>
+                    <button id="btn-shoot" class="py-2 rounded bg-amber-400 text-white font-bold">拍攝</button>
+                    <button id="btn-records" class="py-2 rounded bg-gray-200 font-bold">紀錄</button>
+                </div>
+            </div>
+
+            <div id="records-list" class="mt-4 space-y-3"></div>
+        </main>
+
+        <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center p-4 z-50">
+            <div class="bg-white rounded-lg p-4 w-full max-w-md" id="modal-content"></div>
+        </div>
+
+        <div id="camera-screen" class="hidden fixed inset-0 bg-black bg-opacity-90 flex flex-col items-center justify-center z-40">
+            <video id="camera-video" autoplay playsinline class="w-full max-w-md"></video>
+            <div class="flex gap-4 mt-4">
+                <button id="capture-photo-btn" class="bg-white text-black px-4 py-2 rounded">拍照</button>
+                <button id="close-camera-btn" class="bg-gray-200 text-black px-4 py-2 rounded">取消</button>
+            </div>
+        </div>
+        <canvas id="capture-canvas" class="hidden"></canvas>
+    </div>
+
+<script>
+    const PLANT_INFO_KEY = 'greenQuestPlantInfo';
+    const PLANT_RECORDS_KEY = 'greenQuestPlantRecords';
+    let currentPetIndex = 0; // 0 -> pet A, 1 -> pet B
+    const petA = 'Pet1_1.png';
+    const petB = 'Pet2_1.png';
+
+    function formatDate(d=new Date()){
+        return d.toLocaleDateString('zh-TW');
+    }
+
+    function setDate(){
+        document.getElementById('current-date').textContent = formatDate();
+    }
+
+    function loadRecords(){
+        const raw = localStorage.getItem(PLANT_RECORDS_KEY);
+        return raw ? JSON.parse(raw) : [];
+    }
+
+    function saveRecords(list){ localStorage.setItem(PLANT_RECORDS_KEY, JSON.stringify(list)); }
+
+    function renderRecords(){
+        const container = document.getElementById('records-list');
+        const records = loadRecords();
+        if(records.length===0){ container.innerHTML = '<p class="text-center text-gray-500">尚未有紀錄</p>'; return; }
+        container.innerHTML = '';
+        records.slice().reverse().forEach(r => {
+            const el = document.createElement('div');
+            el.className = 'p-2 border rounded-lg flex gap-2 items-start';
+            el.innerHTML = `<img src="${r.image}" class="w-20 h-20 object-cover rounded"><div class="flex-1"><div class="flex justify-between"><div class="text-sm font-bold">${r.health}</div><div class="text-xs text-gray-500">${r.dateTime}</div></div><p class="text-sm text-gray-700 mt-1">${r.note||''}</p></div>`;
+            container.appendChild(el);
+        });
+        container.insertAdjacentHTML('afterbegin', `<div class="flex justify-end mt-2"><button id="export-pdf" class="px-3 py-1 bg-emerald-600 text-white rounded">匯出 PDF</button></div>`);
+        document.getElementById('export-pdf').addEventListener('click', exportPdf);
+    }
+
+    function exportPdf(){
+        const records = loadRecords();
+        if(records.length===0){ alert('沒有紀錄可匯出'); return; }
+        const infoRaw = localStorage.getItem(PLANT_INFO_KEY);
+        const info = infoRaw ? JSON.parse(infoRaw) : {};
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+
+        // Header
+        doc.setFillColor(22,163,74); // emerald
+        doc.rect(0, 0, doc.internal.pageSize.width, 70, 'F');
+        doc.setFontSize(20);
+        doc.setTextColor(255,255,255);
+        doc.text('植物成長報告', 40, 42);
+
+        // Plant summary info on header-right
+        doc.setFontSize(10);
+        doc.setTextColor(255,255,255);
+        const plantTitle = info.nickname || '未命名植物';
+        const plantSpecies = info.species || '未知品種';
+        const plantDate = info.plantDate || '';
+        const summaryX = doc.internal.pageSize.width - 220;
+        doc.text(`名稱：${plantTitle}`, summaryX, 28);
+        doc.text(`品種：${plantSpecies}`, summaryX, 42);
+        doc.text(`種植日：${plantDate}`, summaryX, 56);
+
+        doc.setDrawColor(200);
+        doc.setLineWidth(0.5);
+        doc.line(36, 82, doc.internal.pageSize.width - 36, 82);
+
+        doc.setFontSize(12);
+        doc.setTextColor(0,0,0);
+        let y = 100;
+
+        // Add brief plant notes if available
+        if (info.notes) {
+            doc.setFontSize(10);
+            doc.text(`備註：${info.notes}`, 40, y);
+            y += 20;
+        }
+
+        // Records count
+        doc.setFontSize(11);
+        doc.text(`總紀錄：${records.length}`, 40, y);
+        y += 18;
+
+        // Iterate records
+        records.forEach((r, idx) => {
+            if (y > doc.internal.pageSize.height - 120) { doc.addPage(); y = 40; }
+
+            // Card background
+            const cardX = 36;
+            const cardW = doc.internal.pageSize.width - 72;
+            const cardHStart = y;
+            doc.setDrawColor(220);
+            doc.roundedRect(cardX, y, cardW, 84, 6, 6);
+
+            // Left column: text
+            const textX = cardX + 12;
+            const imgX = cardX + cardW - 84;
+            doc.setFontSize(10);
+            doc.setTextColor(34,34,34);
+            doc.text(`${idx + 1}. ${r.dateTime}`, textX, y + 18);
+            doc.setFontSize(10);
+            doc.text(`狀態：${r.health}`, textX, y + 34);
+            if (r.note) {
+                // wrap text
+                const noteLines = doc.splitTextToSize(`觀察：${r.note}`, imgX - textX - 8);
+                doc.text(noteLines, textX, y + 50);
+            }
+
+            // Right column: image (if present)
+            if (r.image) {
+                try {
+                    doc.addImage(r.image, 'PNG', imgX, y + 8, 64, 64);
+                } catch (e) {
+                    console.warn('addImage fail', e);
+                }
+            }
+
+            y += 100;
+        });
+
+        // Footer with export date
+        const footerY = doc.internal.pageSize.height - 30;
+        doc.setFontSize(9);
+        doc.setTextColor(120,120,120);
+        doc.text(`匯出日期：${new Date().toLocaleString('zh-TW')}`, 40, footerY);
+
+        // Save file with nickname in filename if available
+        const safeName = (plantTitle || 'plant').replace(/[^a-zA-Z0-9-_]/g, '_');
+        doc.save(`${safeName}_growth_report.pdf`);
+    }
+
+    // 資料 Modal
+    function openDataModal(){
+        const infoRaw = localStorage.getItem(PLANT_INFO_KEY);
+        const info = infoRaw ? JSON.parse(infoRaw) : { nickname: '', plantDate: '', species: '', health: '', notes: '' };
+        const content = `
+            <h3 class="text-lg font-bold mb-2">植物資料</h3>
+            <div class="space-y-2">
+                <input id="f-nickname" placeholder="植物暱稱" value="${info.nickname||''}" class="w-full p-2 border rounded">
+                <input id="f-plantDate" type="date" value="${info.plantDate||''}" class="w-full p-2 border rounded">
+                <input id="f-species" placeholder="品種" value="${info.species||''}" class="w-full p-2 border rounded">
+                <select id="f-health" class="w-full p-2 border rounded"><option value="健康">健康</option><option value="不佳">不佳</option></select>
+                <textarea id="f-notes" placeholder="觀察筆記" class="w-full p-2 border rounded">${info.notes||''}</textarea>
+                <div class="flex gap-2 mt-3"><button id="data-cancel" class="flex-1 p-2 bg-gray-200 rounded">取消</button><button id="data-save" class="flex-1 p-2 bg-emerald-600 text-white rounded">完成</button></div>
+            </div>
+        `;
+        showModal(content);
+        document.getElementById('data-cancel').addEventListener('click', hideModal);
+        document.getElementById('data-save').addEventListener('click', ()=>{
+            const saved = { nickname: document.getElementById('f-nickname').value.trim(), plantDate: document.getElementById('f-plantDate').value, species: document.getElementById('f-species').value.trim(), health: document.getElementById('f-health').value, notes: document.getElementById('f-notes').value.trim() };
+            localStorage.setItem(PLANT_INFO_KEY, JSON.stringify(saved));
+            hideModal();
+            alert('已儲存植物資料');
+        });
+    }
+
+    // Camera flow
+    let camStream = null;
+    async function openCamera(){
+        try{
+            const v = document.getElementById('camera-video');
+            camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            v.srcObject = camStream;
+            document.getElementById('camera-screen').classList.remove('hidden');
+        }catch(e){ alert('無法開啟相機：' + e.message); }
+    }
+    function closeCamera(){ if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; } document.getElementById('camera-screen').classList.add('hidden'); }
+    function captureToRecord(){
+        const v = document.getElementById('camera-video');
+        const canvas = document.getElementById('capture-canvas');
+        canvas.width = v.videoWidth; canvas.height = v.videoHeight;
+        const ctx = canvas.getContext('2d'); ctx.drawImage(v,0,0,canvas.width,canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+        closeCamera();
+        // ask health & note
+        const modalHtml = `
+            <h3 class="text-lg font-bold mb-2">拍攝結果</h3>
+            <img src="${dataUrl}" class="w-full h-40 object-cover rounded mb-2">
+            <div class="mb-2"><label class="block text-sm">健康狀態</label><select id="m-health" class="w-full p-2 border rounded"><option value="健康">健康</option><option value="不佳">不佳</option></select></div>
+            <textarea id="m-note" placeholder="觀察筆記（選填）" class="w-full p-2 border rounded mb-2"></textarea>
+            <div class="flex gap-2"><button id="m-cancel" class="flex-1 p-2 bg-gray-200 rounded">取消</button><button id="m-save" class="flex-1 p-2 bg-emerald-600 text-white rounded">儲存</button></div>
+        `;
+        showModal(modalHtml);
+        document.getElementById('m-cancel').addEventListener('click', hideModal);
+        document.getElementById('m-save').addEventListener('click', ()=>{
+            const rec = { dateTime: new Date().toLocaleString('zh-TW'), health: document.getElementById('m-health').value, note: document.getElementById('m-note').value.trim(), image: dataUrl };
+            const arr = loadRecords(); arr.push(rec); saveRecords(arr); hideModal(); renderRecords();
+        });
+    }
+
+    // Modal helpers
+    function showModal(html){ const m = document.getElementById('modal'); document.getElementById('modal-content').innerHTML = html; m.classList.remove('hidden'); }
+    function hideModal(){ document.getElementById('modal').classList.add('hidden'); }
+
+    // Pet interactions
+    function initPetArea(){
+        const mainImg = document.getElementById('pet-visual-main');
+        document.getElementById('pet-choice-a').addEventListener('click', ()=>{ currentPetIndex=0; mainImg.src = petA; document.getElementById('pet-choice-a').classList.add('border-emerald-200'); document.getElementById('pet-choice-b').classList.remove('border-emerald-200'); });
+        document.getElementById('pet-choice-b').addEventListener('click', ()=>{ currentPetIndex=1; mainImg.src = petB; document.getElementById('pet-choice-b').classList.add('border-emerald-200'); document.getElementById('pet-choice-a').classList.remove('border-emerald-200'); });
+        mainImg.addEventListener('click', ()=>{
+            // 首次點擊切換；若已為第二個寵物則返回主頁
+            if(currentPetIndex===0){ currentPetIndex=1; mainImg.src = petB; document.getElementById('pet-choice-b').classList.add('border-emerald-200'); document.getElementById('pet-choice-a').classList.remove('border-emerald-200'); }
+            else { window.location.href = 'index.html'; }
+        });
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', ()=>{
+        setDate(); initPetArea(); renderRecords();
+        document.getElementById('back-home').addEventListener('click', ()=> window.location.href='index.html');
+        document.getElementById('btn-data').addEventListener('click', openDataModal);
+        document.getElementById('btn-shoot').addEventListener('click', openCamera);
+        document.getElementById('btn-records').addEventListener('click', renderRecords);
+        document.getElementById('capture-photo-btn').addEventListener('click', captureToRecord);
+        document.getElementById('close-camera-btn').addEventListener('click', closeCamera);
+    });
+</script>
+
+</body>
+</html>
